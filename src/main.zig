@@ -4,13 +4,13 @@ const sample_origin = "LOGDIAG";
 const sample_text = "LOGDIAG SDK application record";
 const diagnostic_text = "LOGDIAG diagnostic snapshot";
 
-pub fn r4_app_main(r4_app: *r4os.App) i32 {
+pub fn r4_app_main(r4_app: *r4os.App2) i32 {
     var ctx = r4_app.system();
     ctx.println("LOGDIAG");
 
     var ok = true;
     if (!ctx.hasFn("service_call")) return fail(&ctx, "service-api");
-    if (!ensureRunning(&ctx)) return fail(&ctx, "start");
+    if (!ensureRunning(r4_app, &ctx)) return fail(&ctx, "start");
 
     var status_before = r4os.abi.LogServiceStatus{};
     if (ctx.logServiceStatus(&status_before) != r4os.abi.service_api_result_ok) return fail(&ctx, "status");
@@ -106,7 +106,7 @@ pub fn r4_app_main(r4_app: *r4os.App) i32 {
     }
     printCheck(&ctx, "LOGSVC export", true);
 
-    if (!testUnavailablePath(&ctx)) return fail(&ctx, "unavailable");
+    if (!testUnavailablePath(r4_app, &ctx)) return fail(&ctx, "unavailable");
     printCheck(&ctx, "LOGSVC unavailable error", true);
 
     ctx.write("LOGDIAG result: ");
@@ -114,31 +114,28 @@ pub fn r4_app_main(r4_app: *r4os.App) i32 {
     return if (ok) 0 else 1;
 }
 
-fn ensureRunning(ctx: *const r4os.r4sys.Context) bool {
+fn ensureRunning(app: *r4os.App2, ctx: *const r4os.r4sys.Context) bool {
     var info: r4os.abi.ServiceInfo = .{};
     const status = ctx.serviceStatus(r4os.abi.log_r4x_service_name, &info);
     if (status != r4os.abi.service_api_result_ok) return false;
-    if (info.state == r4os.abi.service_state_running) return waitOpen(ctx, 160);
+    if (info.state == r4os.abi.service_state_running) return waitOpen(app, 160);
     const start = ctx.serviceStart(r4os.abi.log_r4x_service_name, &info);
     if (start != r4os.abi.service_api_result_ok and start != r4os.abi.service_api_result_running) return false;
-    return waitOpen(ctx, 160);
+    return waitOpen(app, 160);
 }
 
-fn waitOpen(ctx: *const r4os.r4sys.Context, max_ticks: u32) bool {
-    var tick: u32 = 0;
-    while (tick < max_ticks) : (tick += 1) {
-        var info: r4os.abi.ServiceInfo = .{};
-        const rc = ctx.serviceOpen(r4os.abi.log_r4x_service_name, &info);
-        if (rc == r4os.abi.service_api_result_ok and info.handle != 0) {
-            _ = ctx.serviceClose(info.handle);
-            return true;
-        }
-        ctx.sleepTicks(1);
-    }
-    return false;
+fn waitOpen(app: *r4os.App2, max_ticks: u32) bool {
+    const services = app.services() orelse return false;
+    const clock = app.clock() catch return false;
+    var budget = r4os.rpc_budget.Budget.fromTicks(clock.read, max_ticks) catch return false;
+    var connection = switch (r4os.app_services.openUntil(&services, r4os.abi.log_r4x_service_name, &budget)) {
+        .connection => |value| value,
+        .failure => return false,
+    };
+    return connection.close() == r4os.abi.service_api_result_ok;
 }
 
-fn testUnavailablePath(ctx: *const r4os.r4sys.Context) bool {
+fn testUnavailablePath(app: *r4os.App2, ctx: *const r4os.r4sys.Context) bool {
     var info: r4os.abi.ServiceInfo = .{};
     const stop = ctx.serviceStop(r4os.abi.log_r4x_service_name, &info, ctx.ticksFromMilliseconds(1000));
     if (stop != r4os.abi.service_api_result_ok) return false;
@@ -149,7 +146,7 @@ fn testUnavailablePath(ctx: *const r4os.r4sys.Context) bool {
 
     const start = ctx.serviceStart(r4os.abi.log_r4x_service_name, &info);
     if (start != r4os.abi.service_api_result_ok and start != r4os.abi.service_api_result_running) return false;
-    return waitOpen(ctx, 160);
+    return waitOpen(app, 160);
 }
 
 fn hasSource(page: *const r4os.abi.LogServiceSourcePage, source_id: u32) bool {
